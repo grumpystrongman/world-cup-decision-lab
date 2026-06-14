@@ -1,0 +1,12 @@
+LINKEDIN DEMO
+
+From the repository folder, run:
+
+python -m http.server 8000 -d site
+
+Then open your browser to localhost port 8000.
+
+If you see a directory listing, you ran the server from the wrong folder or forgot '-d site'.
+
+The premium demo is in the site folder.
+The Streamlit analytics workbench is app.py.
