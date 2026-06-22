@@ -1,14 +1,44 @@
-﻿import pandas as pd
+import pandas as pd
+
+
+def _extract_feature_importances(model):
+    """Return feature importances from plain or calibrated tree models.
+
+    CalibratedClassifierCV wraps the underlying estimator, so the old direct
+    feature_importances_ lookup returns nothing. For calibrated models, average
+    importances across calibrated folds when available.
+    """
+    if hasattr(model, "feature_importances_"):
+        return list(model.feature_importances_)
+
+    calibrated_classifiers = getattr(model, "calibrated_classifiers_", None)
+    if calibrated_classifiers:
+        importances = []
+        for calibrated in calibrated_classifiers:
+            estimator = getattr(calibrated, "estimator", None)
+            if estimator is not None and hasattr(estimator, "feature_importances_"):
+                importances.append(list(estimator.feature_importances_))
+        if importances:
+            frame = pd.DataFrame(importances)
+            return list(frame.mean(axis=0))
+
+    return []
+
 
 def feature_importance_from_model(pipeline):
     model = pipeline.named_steps["model"]
     features = list(pipeline.named_steps["prep"].feature_names_in_)
-    values = getattr(model, "feature_importances_", [])
+    values = _extract_feature_importances(model)
+
+    if len(values) != len(features):
+        values = [0.0 for _ in features]
+
     return (
         pd.DataFrame({"feature": features, "importance": values})
         .sort_values("importance", ascending=False)
         .reset_index(drop=True)
     )
+
 
 def plain_english_match_explanation(home_team, away_team, probabilities, match_row):
     home_prob = probabilities.get("home_win", 0.0)
@@ -30,6 +60,7 @@ def plain_english_match_explanation(home_team, away_team, probabilities, match_r
         f"The draw probability is {draw_prob:.1%}. "
         f"{strength} Scenario controls show how sensitive the model is to team-strength assumptions."
     )
+
 
 def executive_tournament_summary(simulation_df, scenario_label="baseline"):
     top = simulation_df.head(5).copy()
