@@ -1,6 +1,7 @@
 from pathlib import Path
+
 import joblib
-import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, log_loss
@@ -28,13 +29,18 @@ def train_model(features_df, output_path="data/processed/match_model.joblib"):
     y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
 
     preprocessor = ColumnTransformer([("num", StandardScaler(), FEATURES)], remainder="drop")
-    classifier = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=7,
-        min_samples_leaf=3,
+    base_classifier = RandomForestClassifier(
+        n_estimators=500,
+        max_depth=6,
+        min_samples_leaf=8,
         random_state=42,
         class_weight="balanced_subsample",
+        n_jobs=-1,
     )
+
+    # Probability calibration matters more than raw classification accuracy for decision intelligence.
+    # This reduces overconfident misses, especially around draws and upsets.
+    classifier = CalibratedClassifierCV(base_classifier, method="sigmoid", cv=3)
     pipeline = Pipeline([("prep", preprocessor), ("model", classifier)])
     pipeline.fit(X_train, y_train)
 
@@ -48,6 +54,7 @@ def train_model(features_df, output_path="data/processed/match_model.joblib"):
         "classification_report": classification_report(y_test, predictions, output_dict=True, zero_division=0),
         "training_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
+        "probability_calibration": "CalibratedClassifierCV sigmoid cv=3",
     }
 
     output_path = Path(output_path)
