@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import joblib
 import pandas as pd
@@ -8,10 +13,10 @@ from sklearn.metrics import accuracy_score, log_loss
 
 from src.models.predict import make_match_row, predict_match
 
-RESULTS_PATH = Path("data/actual/world_cup_results.csv")
-MODEL_PATH = Path("data/processed/match_model.joblib")
-RATINGS_PATH = Path("data/processed/team_ratings.csv")
-OUT_PATH = Path("data/actual/model_reality_check.csv")
+RESULTS_PATH = REPO_ROOT / "data/actual/world_cup_results.csv"
+MODEL_PATH = REPO_ROOT / "data/processed/match_model.joblib"
+RATINGS_PATH = REPO_ROOT / "data/processed/team_ratings.csv"
+OUT_PATH = REPO_ROOT / "data/actual/model_reality_check.csv"
 OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
