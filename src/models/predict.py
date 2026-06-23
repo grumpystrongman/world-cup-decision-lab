@@ -2,6 +2,12 @@ import numpy as np
 import pandas as pd
 from src.features.elo import expected_score
 
+OUTCOME_PRIOR = {
+    "home_win": 0.43,
+    "draw": 0.27,
+    "away_win": 0.30,
+}
+
 
 def make_match_row(
     home_team,
@@ -43,9 +49,41 @@ def make_match_row(
     ])
 
 
-def predict_match(model, match_row):
+def _smooth_probabilities(probability_map, match_row=None, shrinkage=0.12):
+    """Reduce overconfident misses and keep draw probability alive.
+
+    The Reality Check showed accuracy improved but draw misses were still too costly.
+    This light-touch smoothing blends raw model probabilities with tournament priors,
+    then adds a small context-aware draw lift for highly uncertain matchups.
+    """
+    labels = list(probability_map.keys())
+    smoothed = {}
+    for label in labels:
+        prior = OUTCOME_PRIOR.get(label, 1.0 / max(1, len(labels)))
+        smoothed[label] = (1.0 - shrinkage) * float(probability_map[label]) + shrinkage * prior
+
+    if match_row is not None and "draw" in smoothed:
+        try:
+            uncertainty = float(match_row.iloc[0].get("draw_likelihood", 0.0))
+        except Exception:
+            uncertainty = 0.0
+        draw_lift = 0.04 * max(0.0, min(1.0, uncertainty))
+        non_draw_labels = [label for label in labels if label != "draw"]
+        non_draw_total = sum(smoothed[label] for label in non_draw_labels) or 1.0
+        for label in non_draw_labels:
+            smoothed[label] -= draw_lift * (smoothed[label] / non_draw_total)
+        smoothed["draw"] += draw_lift
+
+    total = sum(max(0.0, value) for value in smoothed.values()) or 1.0
+    return {label: max(0.0, value) / total for label, value in smoothed.items()}
+
+
+def predict_match(model, match_row, smooth=True):
     probabilities = model.predict_proba(match_row)[0]
-    return {str(label): float(prob) for label, prob in zip(model.classes_, probabilities)}
+    raw = {str(label): float(prob) for label, prob in zip(model.classes_, probabilities)}
+    if not smooth:
+        return raw
+    return _smooth_probabilities(raw, match_row=match_row)
 
 
 def sample_outcome(probabilities, rng):
