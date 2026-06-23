@@ -8,6 +8,8 @@ from sklearn.metrics import accuracy_score, classification_report, log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from src.models.draw_aware_model import DrawAwareTwoStageModel
+
 FEATURES = [
     "elo_diff_pre",
     "expected_home_pre",
@@ -23,10 +25,35 @@ FEATURES = [
 ]
 
 
+def _make_preprocessor():
+    return ColumnTransformer([("num", StandardScaler(), FEATURES)], remainder="drop")
+
+
+def _make_calibrated_forest(max_depth=7, min_samples_leaf=10, n_estimators=600):
+    base_classifier = RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,
+        random_state=42,
+        class_weight="balanced_subsample",
+        n_jobs=-1,
+    )
+    return CalibratedClassifierCV(base_classifier, method="sigmoid", cv=3)
+
+
+def _make_pipeline(max_depth=7, min_samples_leaf=10, n_estimators=600):
+    return Pipeline(
+        [
+            ("prep", _make_preprocessor()),
+            ("model", _make_calibrated_forest(max_depth=max_depth, min_samples_leaf=min_samples_leaf, n_estimators=n_estimators)),
+        ]
+    )
+
+
 def train_model(features_df, output_path="data/processed/match_model.joblib"):
     df = features_df.dropna(subset=["target"]).copy()
-    if len(df) < 20:
-        raise ValueError("Need at least 20 matches to train. Use --use-sample for demo or add real results.csv.")
+    if len(df) < 50:
+        raise ValueError("Need at least 50 matches to train a draw-aware model. Use --use-sample or add real results.csv.")
 
     for feature in FEATURES:
         if feature not in df.columns:
@@ -38,32 +65,38 @@ def train_model(features_df, output_path="data/processed/match_model.joblib"):
     X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
     y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
 
-    preprocessor = ColumnTransformer([("num", StandardScaler(), FEATURES)], remainder="drop")
-    base_classifier = RandomForestClassifier(
-        n_estimators=600,
-        max_depth=7,
-        min_samples_leaf=10,
-        random_state=42,
-        class_weight="balanced_subsample",
-        n_jobs=-1,
-    )
+    multiclass_pipeline = _make_pipeline(max_depth=7, min_samples_leaf=10, n_estimators=600)
+    multiclass_pipeline.fit(X_train, y_train)
 
-    classifier = CalibratedClassifierCV(base_classifier, method="sigmoid", cv=3)
-    pipeline = Pipeline([("prep", preprocessor), ("model", classifier)])
-    pipeline.fit(X_train, y_train)
+    draw_y_train = y_train.apply(lambda value: "draw" if value == "draw" else "decisive")
+    draw_pipeline = _make_pipeline(max_depth=6, min_samples_leaf=12, n_estimators=500)
+    draw_pipeline.fit(X_train, draw_y_train)
+
+    decisive_mask = y_train != "draw"
+    decisive_pipeline = _make_pipeline(max_depth=6, min_samples_leaf=10, n_estimators=500)
+    decisive_pipeline.fit(X_train[decisive_mask], y_train[decisive_mask])
+
+    pipeline = DrawAwareTwoStageModel(
+        multiclass_pipeline=multiclass_pipeline,
+        draw_pipeline=draw_pipeline,
+        decisive_pipeline=decisive_pipeline,
+        two_stage_weight=0.72,
+        min_draw_probability=0.12,
+        close_match_draw_floor=0.24,
+    )
 
     probabilities = pipeline.predict_proba(X_test)
     predictions = pipeline.predict(X_test)
     metrics = {
         "accuracy": float(accuracy_score(y_test, predictions)),
-        "log_loss": float(log_loss(y_test, probabilities, labels=pipeline.classes_)),
+        "log_loss": float(log_loss(y_test, probabilities, labels=list(pipeline.classes_))),
         "classes": list(pipeline.classes_),
         "features": FEATURES,
         "classification_report": classification_report(y_test, predictions, output_dict=True, zero_division=0),
         "training_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
-        "probability_calibration": "CalibratedClassifierCV sigmoid cv=3",
-        "model_note": "Includes draw/uncertainty/upset-risk features to reduce overconfident misses.",
+        "probability_calibration": "DrawAwareTwoStageModel: draw detector + decisive winner model + calibrated multiclass stabilizer",
+        "model_note": "Explicitly models draw risk before allocating decisive win probability.",
     }
 
     output_path = Path(output_path)
