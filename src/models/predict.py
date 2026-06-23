@@ -9,6 +9,10 @@ OUTCOME_PRIOR = {
 }
 
 
+def _clamp(value, low=0.0, high=1.0):
+    return max(low, min(high, float(value)))
+
+
 def make_match_row(
     home_team,
     away_team,
@@ -31,31 +35,40 @@ def make_match_row(
     elo_diff = context_home_elo - away_elo
     expected_home = expected_score(context_home_elo, away_elo)
     expected_uncertainty = 1.0 - abs(expected_home - 0.5) * 2.0
+    recent_points_diff = home_recent_points - away_recent_points
+    recent_goal_diff_diff = home_recent_goal_diff - away_recent_goal_diff
+    form_volatility_diff = home_form_volatility - away_form_volatility
+    form_signal = recent_points_diff + 0.35 * recent_goal_diff_diff
+    elo_signal = elo_diff / 400.0
+    abs_elo = abs(elo_diff)
+    upset_risk = _clamp(1.0 - abs_elo / 400.0)
 
     return pd.DataFrame([
         {
             "elo_diff_pre": elo_diff,
             "expected_home_pre": expected_home,
             "neutral": bool(neutral),
-            "recent_points_diff": home_recent_points - away_recent_points,
-            "recent_goal_diff_diff": home_recent_goal_diff - away_recent_goal_diff,
-            "form_volatility_diff": home_form_volatility - away_form_volatility,
-            "abs_elo_diff_pre": abs(elo_diff),
-            "expected_uncertainty": expected_uncertainty,
-            "close_match_flag": 1 if abs(elo_diff) < 75 else 0,
-            "draw_likelihood": max(0.0, min(1.0, expected_uncertainty)),
-            "upset_risk": max(0.0, min(1.0, 1.0 - abs(elo_diff) / 400.0)),
+            "recent_points_diff": recent_points_diff,
+            "recent_goal_diff_diff": recent_goal_diff_diff,
+            "form_volatility_diff": form_volatility_diff,
+            "goal_trend_diff": 0.0,
+            "abs_elo_diff_pre": abs_elo,
+            "expected_uncertainty": _clamp(expected_uncertainty),
+            "close_match_flag": 1 if abs_elo < 75 else 0,
+            "draw_likelihood": _clamp(expected_uncertainty),
+            "upset_risk": upset_risk,
+            "form_spike": _clamp(max(0.0, abs(form_signal) - 1.0) / 2.5),
+            "form_crash": _clamp(max(0.0, -form_signal - 1.0) / 2.5),
+            "rating_form_disagreement": _clamp(abs(elo_signal - form_signal / 3.0)),
+            "favorite_fragility": _clamp((1.0 if abs_elo > 120 else 0.4) * upset_risk * (1.0 + abs(form_volatility_diff) / 2.0)),
+            "low_scoring_draw_proxy": _clamp(expected_uncertainty * (1.0 - min(1.0, abs(recent_goal_diff_diff) / 3.0))),
+            "tactical_mismatch_proxy": _clamp(abs(recent_goal_diff_diff - elo_signal) / 3.0),
+            "pressure_discontinuity_proxy": _clamp(expected_uncertainty * (1.0 + upset_risk) / 2.0),
         }
     ])
 
 
 def _smooth_probabilities(probability_map, match_row=None, shrinkage=0.12):
-    """Reduce overconfident misses and keep draw probability alive.
-
-    The Reality Check showed accuracy improved but draw misses were still too costly.
-    This light-touch smoothing blends raw model probabilities with tournament priors,
-    then adds a small context-aware draw lift for highly uncertain matchups.
-    """
     labels = list(probability_map.keys())
     smoothed = {}
     for label in labels:
@@ -65,9 +78,11 @@ def _smooth_probabilities(probability_map, match_row=None, shrinkage=0.12):
     if match_row is not None and "draw" in smoothed:
         try:
             uncertainty = float(match_row.iloc[0].get("draw_likelihood", 0.0))
+            pressure = float(match_row.iloc[0].get("pressure_discontinuity_proxy", 0.0))
+            low_scoring = float(match_row.iloc[0].get("low_scoring_draw_proxy", 0.0))
         except Exception:
-            uncertainty = 0.0
-        draw_lift = 0.04 * max(0.0, min(1.0, uncertainty))
+            uncertainty = pressure = low_scoring = 0.0
+        draw_lift = 0.035 * _clamp(uncertainty) + 0.025 * _clamp(pressure) + 0.020 * _clamp(low_scoring)
         non_draw_labels = [label for label in labels if label != "draw"]
         non_draw_total = sum(smoothed[label] for label in non_draw_labels) or 1.0
         for label in non_draw_labels:
