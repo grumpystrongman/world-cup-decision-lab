@@ -17,11 +17,19 @@ FEATURES = [
     "recent_points_diff",
     "recent_goal_diff_diff",
     "form_volatility_diff",
+    "goal_trend_diff",
     "abs_elo_diff_pre",
     "expected_uncertainty",
     "close_match_flag",
     "draw_likelihood",
     "upset_risk",
+    "form_spike",
+    "form_crash",
+    "rating_form_disagreement",
+    "favorite_fragility",
+    "low_scoring_draw_proxy",
+    "tactical_mismatch_proxy",
+    "pressure_discontinuity_proxy",
 ]
 
 
@@ -65,15 +73,15 @@ def train_model(features_df, output_path="data/processed/match_model.joblib"):
     X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
     y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
 
-    multiclass_pipeline = _make_pipeline(max_depth=7, min_samples_leaf=10, n_estimators=600)
+    multiclass_pipeline = _make_pipeline(max_depth=7, min_samples_leaf=10, n_estimators=700)
     multiclass_pipeline.fit(X_train, y_train)
 
     draw_y_train = y_train.apply(lambda value: "draw" if value == "draw" else "decisive")
-    draw_pipeline = _make_pipeline(max_depth=6, min_samples_leaf=12, n_estimators=500)
+    draw_pipeline = _make_pipeline(max_depth=6, min_samples_leaf=12, n_estimators=600)
     draw_pipeline.fit(X_train, draw_y_train)
 
     decisive_mask = y_train != "draw"
-    decisive_pipeline = _make_pipeline(max_depth=6, min_samples_leaf=10, n_estimators=500)
+    decisive_pipeline = _make_pipeline(max_depth=6, min_samples_leaf=10, n_estimators=600)
     decisive_pipeline.fit(X_train[decisive_mask], y_train[decisive_mask])
 
     pipeline = DrawAwareTwoStageModel(
@@ -96,7 +104,7 @@ def train_model(features_df, output_path="data/processed/match_model.joblib"):
         "training_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
         "probability_calibration": "DrawAwareTwoStageModel: draw detector + decisive winner model + calibrated multiclass stabilizer",
-        "model_note": "Explicitly models draw risk before allocating decisive win probability.",
+        "model_note": "Adds tournament discontinuity features for form spikes, fragility, tactical mismatch, draw pressure, and rating-vs-form disagreement.",
     }
 
     output_path = Path(output_path)
